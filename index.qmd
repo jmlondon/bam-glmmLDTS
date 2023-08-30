@@ -1,0 +1,627 @@
+---
+title: "Comparing `mgcv::bam` with `glmmLDTS` for the modeling and prediction of spotted seal haul-out behavior"
+date: "today"
+bibliography: references.bib
+
+author:
+  - name: Josh M. London
+    email: josh.london@noaa.gov
+    orcid: 0000-0002-3647-5046
+    affiliations:
+      - ref: noaa-mml
+
+affiliations:
+  - id: noaa-mml
+    name: Alaska Fisheries Science Center </br> NOAA Fisheries
+    department: Alaska Fisheries Science Center, NOAA Fisheries
+    address: 7600 Sand Point Way NE
+    city: Seattle
+    state: WA
+
+execute: 
+  warning: false
+  message: false
+  
+format:
+  html: 
+    embed-resources: true
+---
+
+```{r}
+#| label: libraries-setup
+#| echo: false
+
+library(glmmLDTS)
+library(mgcv)
+library(tidyverse)
+library(gt)
+library(broom)
+library(gratia)
+library(lubridate)
+library(patchwork)
+library(MetBrewer)
+
+# Format inline integers
+knit_print.integer = function(x, ...) {
+  prettyNum(x, big.mark=",")
+}
+
+registerS3method(
+  "knit_print", "integer", knit_print.integer,
+  envir = asNamespace("knitr")
+)
+```
+
+## Inspiration & Objectives
+
+The `glmmLDTS` package [@verhoef2009] was developed and published over ten years ago and, at the time, provided a fast-computing solution for generalized linear mixed models with massive data sets and many repeated measures on subjects. While the package has general applicability, it was developed with behavioral observations from telemetry deployments on seals in mind (see example data in [@verhoef2009] and analysis in [@london2012]). In recent years, the `mgcv` package's `bam()` model fitting function has emerged as a common solution for fitting similarly massive (if, even much more massive) data sets [@wood2017; @wood2014; @li2019]. The `bam()` approach differs in that it fits a generalized additive model (GAM) and employs additional numerical methods designed for data sets containing upwards of several tens of thousands of data. The random effects are included as special penalized smooths.
+
+Initial testing and exploration of the `mgcv::bam()` approach suggests that models taking a few hours to fit with `glmmLDTS` can be fit in just a few seconds with `mgcv::bam()`. Thus, there's keen interest in understanding whether the results of the fits are comparable and if `mgcv::bam()` might provide an astonishing improvement in computation time without sacrificing important statistical considerations and applicability of the results.
+
+```{r}
+#| label: load-data
+#| echo: false
+#| include: false
+
+spotted_fit_glmm <- readRDS(here::here('data/spotted_fit.rds'))
+spotted_model_data <- readRDS(here::here('data/spotted_model_data.rds'))
+```
+
+Here, we compare speed, model performance, and predictions of `glmmLDTS` and `mgcv::bam()` for a data set of spotted seal haul-out observations from deployed telemetry devices. The primary aim of this model is to describe haul-out behavior during the critical periods of pupping, breeding, and molting and to also provide estimate of availability during aerial surveys such that counts of seals can provide estimates of population abundance. The data set consists of `r nrow(spotted_model_data)` from deployments on `r length(levels(spotted_model_data$speno))` individual spotted seals.
+
+## Exploring `glmmLDTS` and Fit Results
+
+The model specification below was used to specify the `glmmLDTS` model
+
+```{r}
+#| label: glmmLDTS-fit-code
+#| eval: false
+
+fit_spotted <- function(HO_spotted) {
+  glmmLDTS(fixed.formula = dry ~ age_sex + 
+             sin1 + cos1 + sin2 + cos2 + sin3 + cos3 + 
+             day + day2 + day3 + 
+             temp2 + wind + pressure + precip + wind*temp2 +
+             sin1*day + cos1*day + 
+             sin2*day + cos2*day + 
+             sin3*day + cos3*day +
+             sin1*day2 + cos1*day2 + 
+             sin2*day2 + cos2*day2 + 
+             sin3*day2 + cos3*day2 +
+             age_sex:day + age_sex:day2 + age_sex:day3,
+           random.formula = dry ~ speno,
+           data = HO_spotted,
+           EstMeth = "REML",
+           timecol = "time_vec",
+           group.vec = "ar1_id")
+}
+
+```
+
+As a general description of the model, *dry* is a binomial term that indicates whether a seal was out of the water for the majority of a given hour. A collection of fixed effects predictors are included such as *age and sex* class, weather conditions determined from climate reanalysis (e.g. *temperature*, *wind*, *precipitation*), linear, quadratic, and cubic effects of day-of-year to represent temporal changes in behavior, and time of day as a continuous formulation based on Fourier series (*sin1*, *cos1*, *sin2*, ...) that provides a flexible model while preserving the inherent circularity needed for time-of-day effects (i.e., hour 0 should be equal to hour 24). It also represents hour-of-day with 6 parameters, which is a considerable reduction when compared to a 24-parameter variable, especially when fitting models including interactions between hour-of-day and other variables (e.g., age-sex class, day-of-year). The random effect is *speno* (or seal identifier) which is further blocked into consecutive observations -- the *ar1_id* specifies this grouping.
+
+Exact timing for the fit isn't known but, generally, **1-2 hours** on an Apple M1 Silicon laptop has been the experience. Estimates of the fixed effects from the `glmmLDTS` model are provided below in @tbl-glmm-fixed-effects.
+
+```{r}
+#| label: tbl-glmm-fixed-effects
+#| echo: false
+#| tbl-cap: "Preview of fixed effects from the glmmLDTS model"
+spotted_fit_glmm$fixed.effects |> 
+  gt_preview() |>
+  tab_options(
+    table.font.size = pct(90)
+  )
+```
+
+## Exploring `mgcv::bam()` Fit & Results
+
+The model specification below was used to specify the `mgcv::bam()` model
+
+```{r}
+#| label: bam-fit-code
+
+m1 <- mgcv::bam(
+  dry ~ age_sex + s(speno, bs = "re") + sin1 + cos1 + sin2 + cos2 + sin3 + 
+    cos3 + day + day2+ day3 + temp2 + wind + pressure + precip + wind*temp2 +
+    sin1*day + cos1*day + sin2*day + cos2*day + sin3*day + cos3*day +
+    sin1*day2 + cos1*day2 + sin2*day2 + cos2*day2 + sin3*day2 + cos3*day2 +
+    age_sex:day + age_sex:day2 + age_sex:day3,
+  data = spotted_model_data,
+  family = binomial,
+  discrete = TRUE)
+
+```
+
+The initial model specification was meant to match the previous `glmmLDTS` model. The `s(speno, bs = "re")` term is the smooth term for the random effect. All other predictors are the same. Note, the specification for `m1` here does **not** include any AR1 structure for temporal autocorrelation. To include this, we need to provide a value for $\rho$ (or *rho*). We can examine the autocorrelation within the model and use the lag-1 value for $\rho$ .
+
+```{r}
+#| label: lag-1
+#| echo: true
+lag1 <- acf(resid(m1), plot=FALSE)[1][[1]]
+```
+
+The value for lag-1 autocorrelation is `r formatC(as.numeric(lag1))` which is rather high but not surprising. We can, now, update our model specification with a value for *rho* as well as the *A1.start* argument with specifies (TRUE/FALSE) the start point of each speno/block.
+
+```{r}
+#| label: m2
+
+m2 <- mgcv::bam(
+  dry ~ age_sex + s(speno, bs = "re") + sin1 + cos1 + sin2 + cos2 + sin3 + 
+    cos3 + day + day2+ day3 + temp2 + wind + pressure + precip + wind*temp2 +
+    sin1*day + cos1*day + sin2*day + cos2*day + sin3*day + cos3*day +
+    sin1*day2 + cos1*day2 + sin2*day2 + cos2*day2 + sin3*day2 + cos3*day2 +
+    age_sex:day + age_sex:day2 + age_sex:day3,
+  data = spotted_model_data,
+  family = binomial,
+  AR.start = ar1_start,
+  rho = lag1,
+  discrete = TRUE)
+```
+
+Timing for the `mgcv::bam()` fit is approximately **4 seconds** on an Apple M1 Silicon laptop. Estimates of the fixed effects from the `mgcv::bam()` model are provided below in @tbl-bam-fixed-effects.
+
+```{r}
+#| label: tbl-bam-fixed-effects
+#| echo: false
+#| tbl-cap: "Preview of fixed effects from the bam model"
+
+tidy(m2, parametric = TRUE) |> 
+  gt_preview() |>
+  tab_options(
+    table.font.size = pct(90)
+  )
+
+```
+
+The estimates in @tbl-bam-fixed-effects align quite well with those presented in @tbl-glmm-fixed-effects. The same holds true for the estimates of standard error. This provides good indication that both approaches are interpreting the data in a very similar manner. There are, however, a few terms that are estimated as 0 in the `mgcv::bam()` model that have non-zero estimates in the `glmmLDTS` output ( see @tbl-non-zero-bam ). Before recommending `mgcv::bam()` for this analysis, we need to understand why these terms are estimate as 0.
+
+```{r}
+#| label: tbl-non-zero-bam
+#| echo: false
+#| tbl-cap: "Terms with zero estimate in the bam model"
+
+tidy(m2, parametric = TRUE) |> 
+  dplyr::filter(estimate == 0) |>
+  gt() |>
+  tab_options(
+    table.font.size = pct(90)
+  )
+
+```
+
+## Comparing Prediction Estimates and Confidence Intervals
+
+So, it seems that both the original `glmmLDTS` approach and the `mgcv::bam()` approach can provide very similar fits with nearly identical coefficient estimates and standard errors. But, this is to be expected, I think, given that the *glmm* can be considered a special case of *gam* and the only smooth term included was for the random effect. The next area to explore is how the models might compare with respect to prediction estimates and the confidence intervals around those predictions.
+
+For this prediction exercise, we'll want to create a new data frame that includes all of the values we'd like to predict at. For this particular model, it's a rather complex exercise and, thus, the complex function below (feel free to unfold the code block if interested).
+
+```{r}
+#| label: create-newdata-func
+#| include: true
+#| code-fold: true
+
+create_newdata <- function(data, age_sex) {
+  df_list <- vector(mode = "list", length = length({{age_sex}} ))
+
+  for (a_s in {{age_sex}}) {
+    range_yday <- data %>% filter(age_sex == a_s ) %>%
+      summarize(start_day = min(yday),
+                end_day = max(yday))
+    start_day <- range_yday$start_day
+    end_day <- range_yday$end_day
+    n_days = (end_day - start_day) + 1
+
+    # for wx covariates we'll use a gam to get values by 
+    # day/hour since wx is likely to vary w/in day over the season
+
+    gam.baro <-
+      gam(pressure ~ s(yday), 
+          data = data, 
+          method = "REML")
+    gam.temp <-
+      gam(temp2 ~ s(yday) + s(as.numeric(solar_hour)), 
+          data = data, 
+          method = "REML")
+    gam.wind <-
+      gam(wind ~ s(yday) + s(as.numeric(solar_hour)), 
+          data = data, 
+          method = "REML")
+    gam.precip <-
+      gam(precip ~ s(yday), 
+          data = data, 
+          method = "REML")
+
+    wx_new_data <- data.frame(
+      solar_hour = rep(0:23, each = n_days),
+      yday = rep(start_day:end_day, times = 24)
+    )
+
+    temp_pred <- predict(gam.temp, newdata = wx_new_data)
+    wind_pred <- predict(gam.wind, newdata = wx_new_data)
+    baro_pred <- predict(gam.baro, newdata = wx_new_data)
+    precip_pred <- predict(gam.precip, newdata = wx_new_data)
+
+    df <- data.frame(
+      age_sex = a_s,
+      solar_hour = rep(0:23, each = n_days),
+      yday = rep(start_day:end_day, times = 24),
+      northing = mean(data$northing),
+      temp2 = temp_pred,
+      wind = wind_pred,
+      pressure = baro_pred,
+      precip = precip_pred
+    ) %>%
+      mutate(
+        sin1 = sin(pi * solar_hour / 12),
+        cos1 = cos(pi * solar_hour / 12),
+        sin2 = sin(pi * solar_hour / 6),
+        cos2 = cos(pi * solar_hour / 6),
+        sin3 = sin(pi * solar_hour / 4),
+        cos3 = sin(pi * solar_hour / 4),
+      ) %>%
+      mutate(day = (yday - 120) / 10,
+             day2 = day ^ 2,
+             day3 = day ^ 3)
+    df_list[[a_s]] <- df
+  }
+  if(length({{age_sex}}) > 1) {
+    df_out <- bind_rows(df_list) %>%
+      mutate(age_sex = forcats::fct_relevel(
+        age_sex,c("ADULT.F","ADULT.M","SUBADULT","YOUNG OF YEAR"))
+      )
+  } else {
+    df_out <- bind_rows(df_list)
+  }
+}
+
+spotted_newdata <- create_newdata(
+  data = spotted_fit_glmm$dataset,
+  age_sex = levels(spotted_fit_glmm$dataset$age_sex)
+  )
+```
+
+### Predicting from the `glmmLDTS` model
+
+Now, we need a function to predict from the `glmmLDTS` model. This isn't an included function within the package so we'll create our own.
+
+```{r}
+#| label: predict-glmmLDTS-func
+#| include: true
+#| code-fold: true
+#| 
+predict.glmmLDTS <- function(glmmLDTS_model, newdata,
+                             type = "response") {
+# create the model matrix
+  spotted_mm <- model.matrix(glmmLDTS_model$fixed.formula[-2],
+                            data = newdata)
+
+  #clean up extra intercept and get coef
+  fit_coef <- glmmLDTS_model$fixed.effects %>%
+    filter(!is.na(std.err)) %>%
+    pull(estimate)
+
+  predicts <-  
+    tibble(logit_fits = as.vector(spotted_mm %*% fit_coef)) %>% 
+    mutate(logit_fits_se = diag(
+             spotted_mm %*% glmmLDTS_model$covb %*% t(spotted_mm)
+             ),
+           logit_fits_lo95 = logit_fits - 1.96*sqrt(logit_fits_se),
+           logit_fits_up95 = logit_fits + 1.96*sqrt(logit_fits_se),
+           ho_prob = plogis(spotted_mm %*% fit_coef),
+           lower95 = plogis(logit_fits_lo95),
+           upper95 = plogis(logit_fits_up95)
+    )
+  return(predicts)
+}
+
+spotted_newdata <- spotted_newdata %>% 
+  dplyr::bind_cols(
+    predict.glmmLDTS(spotted_fit_glmm, spotted_newdata)
+    )
+
+```
+
+### Predicting from the `mgcv::bam()` model
+
+The `mgcv` package includes a `predict()` function for us, so we can proceed directly to prediction using our `spotted_newdata` and bind the results. The `predict.bam()` function requires a column for `speno` even though we are excluding the random effect (`s(speno)`) from the model prediction. As with the `glmmLDTS` prediction exercise, we'll specify `type = "link"` and calculate our confidence intervals directly.
+
+```{r}
+
+spenos <- unique(spotted_model_data$speno) %>% 
+  as.character()
+
+spotted_newdata <- spotted_newdata %>% 
+  mutate(speno = sample(spenos,1))
+
+spotted_newdata <- spotted_newdata %>%
+  bind_cols(
+    predict(
+      m2,
+      spotted_newdata,
+      type = "link",
+      se.fit = TRUE,
+      exclude = "s(speno)"
+    ) %>%
+      as_tibble()
+  ) %>%
+  rename(fit_bam = fit, se_bam = se.fit) %>%
+  mutate(
+    logit_bam_lo95 = fit_bam - 1.96 * sqrt(se_bam),
+    logit_bam_up95 = fit_bam + 1.96 * sqrt(se_bam),
+    ho_prob_bam = plogis(fit_bam),
+    lower95_bam = plogis(logit_bam_lo95),
+    upper95_bam = plogis(logit_bam_up95)
+  )
+
+```
+
+Now, with predictions from both model approaches in hand, we can visualize the comparison of predictions and associated standard errors (@fig-xy-hoprob).
+
+```{r}
+#| label: fig-xy-hoprob
+#| code-fold: true
+#| fig-cap: "XY plot comparing the predicted haul-out probability (response scale) for the same data between the `glmmLDTS` model fit and the `mgcv::bam()` model fit"
+
+ggplot(data = spotted_newdata) +
+  geom_point(aes(x = ho_prob, y = ho_prob_bam),
+             alpha = 0.1) +
+  geom_abline(slope = 1, intercept = 0) +
+  coord_cartesian() +
+  xlab("Predicted HO Probability - glmmLDTS") +
+  ylab("Predicted HO Probability - mgcv::bam") +
+  ggtitle("Comparing Predicted Haul-out Probability",
+          subtitle = "values shown are on the response scale") +
+  theme_minimal() + theme(legend.position = "none")
+  
+```
+
+This looks great!
+
+Now, let's visualize the predictions with a heat map (@fig-ho-heatmap) that depicts haul-out probability changes over the season and hour of day for each of our age and sex classes.
+
+```{r}
+#| label: fig-ho-heatmap
+#| fig-asp: 1.8
+#| code-fold: true
+#| fig-cap: "Heat maps showing the predicted haul-out probability (response scale) variability over the season and within day for the same data between the `glmmLDTS` model fit and the `mgcv::bam()` model fit"
+
+
+plot_df <- spotted_newdata %>%
+  mutate(date = lubridate::as_date(yday, origin = "2015-01-01"),
+         month = lubridate::month(date,label=TRUE),
+         day = lubridate::day(date)) %>%
+  filter(month != "Aug")
+
+p1 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob)) +
+  geom_tile(color = "white", linewidth = 0) +
+  scale_fill_gradientn(
+    colors = rev(met.brewer("Hiroshige")),
+    name = "haul-out probability",
+    aesthetics = "fill",
+    limits = c(0, 1),
+    breaks = c(0.25, 0.50, 0.75),
+    guide = guide_colorbar(
+      title.position = "bottom",
+      barwidth = 15,
+      barheight = 0.5,
+      title.hjust = 0.5
+    )
+  )
+
+p1 <- p1 + facet_grid(age_sex~month)
+p1 <- p1 + scale_x_continuous(breaks = c(1,10,20,30)) +
+  scale_y_continuous(breaks = c(4,12,20))
+p1 <- p1 + theme(legend.position = "bottom") +
+  theme(strip.background = element_rect(colour="white")) +
+  theme(axis.ticks=element_blank()) +
+  xlab("day of month") + ylab("local solar hour") +
+  ggtitle("Spotted seal haul-out predictions - glmmLDTS")
+
+
+p2 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob_bam)) +
+  geom_tile(color = "white", linewidth = 0) +
+  scale_fill_gradientn(
+    colors = rev(met.brewer("Hiroshige")),
+    name = "haul-out probability",
+    aesthetics = "fill",
+    limits = c(0, 1),
+    breaks = c(0.25, 0.50, 0.75),
+    guide = guide_colorbar(
+      title.position = "bottom",
+      barwidth = 15,
+      barheight = 0.5,
+      title.hjust = 0.5
+    )
+  )
+p2 <- p2 + facet_grid(age_sex~month)
+p2 <- p2 + scale_x_continuous(breaks = c(1,10,20,30)) +
+  scale_y_continuous(breaks = c(4,12,20))
+p2 <- p2 + theme(legend.position = "bottom") +
+  theme(strip.background = element_rect(colour="white")) +
+  theme(axis.ticks=element_blank()) +
+  xlab("day of month") + ylab("local solar hour") +
+  ggtitle("Spotted seal haul-out predictions - mgcv::bam")
+
+p1/p2
+```
+
+That looks great, too!
+
+So far, we've shown that the model estimates, associated standard errors, and prediction values for haul-out probability are very similar between the `glmmLDTS` and `mgcv::bam()` approach. The final comparison to evaluate is the prediction standard errors. We'll start with an XY plot similar to what we did for the prediction estimates.
+
+```{r}
+#| label: plot-xy-predse
+#| code-fold: true
+#| fig-cap: "XY plot comparing the predicted standard errors (link scale) for the same data between the `glmmLDTS` model fit and the `mgcv::bam()` model fit"
+
+
+ggplot(data = spotted_newdata) +
+  geom_point(aes(x = logit_fits_se, y = se_bam),
+             alpha = 0.1) +
+  geom_abline(slope = 1, intercept = 0) +
+  coord_cartesian() + ylim(c(0,NA)) + xlim(c(0,NA)) +
+  xlab("Prediction Standard Error - glmmLDTS") +
+  ylab("Prediction Standard Error - mgcv::bam") +
+  ggtitle("Comparing Prediction Standard Errors",
+          subtitle = "values shown are on the logit scale, not response") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+Now we have our first indication of divergent results between the two model approaches. The prediction standard errors from the `mgcv::bam()` model are larger than from the `glmmLDTS`. Let's explore this a bit more and visualize in a different manner.
+
+```{r}
+#| label: fig-prese-by-date
+#| fig-cap: "Comparison of predictions and standard errors for the `glmmLDTS` model (darker shade) and the `mgcv::bam()` model (orange). Solar hour was fixed at noon"
+
+p3 <- ggplot(plot_df %>% filter(solar_hour == 12), aes(date,ho_prob)) +
+  geom_ribbon(aes(ymin=lower95,ymax=upper95), fill = "grey30", alpha = 0.3) +
+  geom_line(aes(date,ho_prob)) +
+  geom_ribbon(aes(ymin=lower95_bam,ymax=upper95_bam), fill = "orange", alpha = 0.3) +
+  geom_line(aes(date, ho_prob_bam), color = "orange") +
+  facet_grid(. ~ age_sex) +
+  xlab("day or year") +
+  ylab("haul-out probability") +
+  ggtitle("Comparing Predictions & Standard Errors",
+          subtitle = "glmmLDTS is the darker shaded region and orange is mgcv::bam") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p3
+```
+
+So, it's clear that the standard errors around the predictions in the `mgcv::bam()` model is much larger than from `glmmLDTS`. It's not, initially, clear why this is. And, understanding this discrepancy is and important task before we could consider recommending `mgcv::bam()` and the significant improvement in computational speed.
+
+## What About a More GAM/BAM-centric Approach
+
+Up to this point, the focus has been on comparing the same model specification (other than the approach for including random effects) between `glmmLDTS` and `mgcv::bam()`. However, a more GAM-like approach to `mgcv::bam()` might rely on a different specification that includes more smooth terms and such.
+
+That might be interesting to explore while we are at it. One possible approach could be:
+
+```{r}
+#| label: bam-with-smooths-model
+spotted_model_data <- spotted_model_data %>% 
+  mutate(solar_hour = as.integer(solar_hour),
+         wind_chill = wind*temp2)
+
+
+m5ti <- mgcv::bam(
+  dry ~ s(speno, bs = "re") +
+    s(yday, bs="cr",by=age_sex)+ s(solar_hour, bs="cc")+
+    ti(yday, solar_hour, bs=c("cr","cc")) + age_sex +
+  s(precip, bs = "cs") + s(temp2, bs = "cs") +
+  s(wind, bs = "cs") + s(wind_chill) + s(pressure, bs = "cs"),
+  data = spotted_model_data,
+  family = binomial,
+  AR.start = ar1_start,
+  rho = lag1,
+  discrete = TRUE
+)
+
+m5te <- mgcv::bam(
+  dry ~ s(speno, bs = "re") +
+    te(yday, solar_hour,bs=c("cr","cc"), by=age_sex) + age_sex +
+  s(precip, bs = "cs") + s(temp2, bs = "cs") +
+  s(wind, bs = "cs") + s(wind_chill) + s(pressure, bs = "cs"),
+  data = spotted_model_data,
+  family = binomial,
+  AR.start = ar1_start,
+  rho = lag1,
+  discrete = TRUE
+)
+```
+
+```{r}
+AIC(m5ti, m5te)
+```
+
+Ok, now that we have a successful fit let's do some predictions
+
+```{r}
+spotted_newdata <- spotted_newdata %>% 
+  mutate(wind_chill = wind*temp2)
+
+m5_predict <- predict(
+      m5ti,
+      spotted_newdata,
+      type = "link",
+      se.fit = TRUE,
+      exclude = "s(speno)"
+    ) %>%
+      as_tibble() %>% 
+  rename(fit_bam2 = fit, se_bam2 = se.fit) %>% 
+  mutate(
+    logit_bam2_lo95 = fit_bam2 - 1.96 * sqrt(se_bam2),
+    logit_bam2_up95 = fit_bam2 + 1.96 * sqrt(se_bam2),
+    ho_prob_bam2 = plogis(fit_bam2),
+    lower95_bam2 = plogis(logit_bam2_lo95),
+    upper95_bam2 = plogis(logit_bam2_up95)
+  )
+
+spotted_newdata <- spotted_newdata %>% 
+  bind_cols(m5_predict)
+
+```
+
+And, visualize those predictions similar to our other plots
+
+```{r}
+#| label: fig-bam2-heatmap
+#| code-fold: true
+#| fig-cap: "Heat map showing the predicted haul-out probability (response scale) variability over the season and within day from the `mgcv::bam()` with smooths model fit"
+
+plot_df <- spotted_newdata %>%
+  mutate(date = lubridate::as_date(yday, origin = "2015-01-01"),
+         month = lubridate::month(date,label=TRUE),
+         day = lubridate::day(date)) %>%
+  filter(month != "Aug")
+
+p1 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob_bam2)) +
+  geom_tile(color = "white", linewidth = 0) +
+  scale_fill_gradientn(
+    colors = rev(met.brewer("Hiroshige")),
+    name = "haul-out probability",
+    aesthetics = "fill",
+    limits = c(0, 1),
+    breaks = c(0.25, 0.50, 0.75),
+    guide = guide_colorbar(
+      title.position = "bottom",
+      barwidth = 15,
+      barheight = 0.5,
+      title.hjust = 0.5
+    )
+  )
+
+p1 <- p1 + facet_grid(age_sex~month)
+p1 <- p1 + scale_x_continuous(breaks = c(1,10,20,30)) +
+  scale_y_continuous(breaks = c(4,12,20))
+p1 <- p1 + theme(legend.position = "bottom") +
+  theme(strip.background = element_rect(colour="white")) +
+  theme(axis.ticks=element_blank()) +
+  xlab("day of month") + ylab("local solar hour") +
+  ggtitle("Spotted seal haul-out predictions - mgcv::bam with smooths")
+
+p1
+```
+
+That's not so bad and, actually, pretty good given the very different approach. Now, let's take a look at predictions along with confidence intervals.
+
+```{r}
+#| label: fig-bam2-predict-curve
+#| code-fold: true
+#| fig-cap: "Comparison of predictions and standard errors for the `glmmLDTS` model (darker shade) and the `mgcv::bam()` with smooths model (orange). Solar hour was fixed at noon"
+
+p3 <- ggplot(plot_df %>% filter(solar_hour == 12), aes(date,ho_prob)) +
+  geom_ribbon(aes(ymin=lower95,ymax=upper95), fill = "grey30", alpha = 0.3) +
+  geom_line(aes(date,ho_prob)) +
+  geom_ribbon(aes(ymin=lower95_bam2,ymax=upper95_bam2), fill = "orange", alpha = 0.3) +
+  geom_line(aes(date, ho_prob_bam2), color = "orange") +
+  facet_grid(. ~ age_sex) +
+  xlab("day or year") +
+  ylab("haul-out probability") +
+  ggtitle("Comparing Predictions & Standard Errors",
+          subtitle = "glmmLDTS is the darker shaded region and orange is mgcv::bam with smooths") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p3
+```
