@@ -173,7 +173,7 @@ tidy(m2, parametric = TRUE) |>
 
 ```
 
-The estimates in @tbl-bam-fixed-effects align quite well with those presented in @tbl-glmm-fixed-effects. The same holds true for the estimates of standard error. This provides good indication that both approaches are interpreting the data in a very similar manner. There are, however, a few terms that are estimated as 0 in the `mgcv::bam()` model that have non-zero estimates in the `glmmLDTS` output ( see @tbl-non-zero-bam ). **Before recommending `mgcv::bam()` for this analysis, we need to understand why these terms are estimate as 0.**
+The estimates in @tbl-bam-fixed-effects align quite well with those presented in @tbl-glmm-fixed-effects. The same holds true for the estimates of standard error. This provides good indication that both approaches are interpreting the data in a very similar manner. There are, however, a few terms that are estimated as 0 in the `mgcv::bam()` model that have non-zero estimates in the `glmmLDTS` output ( see @tbl-non-zero-bam ). **Before recommending `mgcv::bam()` for this analysis, we need to understand why these terms are estimated as 0.**
 
 ```{r}
 #| label: tbl-non-zero-bam
@@ -390,7 +390,7 @@ plot_df <- spotted_newdata %>%
   mutate(date = lubridate::as_date(yday, origin = "2015-01-01"),
          month = lubridate::month(date,label=TRUE),
          day = lubridate::day(date)) %>%
-  filter(month != "Aug")
+  filter(!month %in% c("Jul","Aug"))
 
 p1 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob)) +
   geom_tile(color = "white", linewidth = 0) +
@@ -573,7 +573,7 @@ plot_df <- spotted_newdata %>%
   mutate(date = lubridate::as_date(yday, origin = "2015-01-01"),
          month = lubridate::month(date,label=TRUE),
          day = lubridate::day(date)) %>%
-  filter(month != "Aug")
+  filter(!month %in% c("Jul","Aug"))
 
 p1 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob_bam2)) +
   geom_tile(color = "white", linewidth = 0) +
@@ -603,7 +603,7 @@ p1 <- p1 + theme(legend.position = "bottom") +
 p1
 ```
 
-That's not so bad and, actually, pretty good given the very different approach. I imagine it speaks to the strong signal in the underlying data. An interesting aspect of this result is that we, now, see a period of increased haul-out behavior in adult females that coincides with pupping and nursing. The previous linear model approach doesn't emphasize this feature - presumably because the polynomials for day of year aren't flexible enough.
+That's not so bad and, actually, pretty good given the very different approach. I imagine it speaks to the strong signal in the underlying data. An interesting aspect of this result is that we, now, see a period of increased haul-out behavior in adult females that coincides with pupping and nursing. There's also an increased signal for adult males in that time that would coincide with their courting behavior and hauling out with nursing females. The previous linear model approach doesn't emphasize these features.
 
 ```{r}
 #| label: fig-bam2-predict-curve
@@ -625,3 +625,5 @@ p3 <- ggplot(plot_df %>% filter(solar_hour == 12), aes(date,ho_prob)) +
 
 p3
 ```
+
+There is, clearly, some extra 'wiggliness' in this approach and worth discussion regarding whether there's too much and we're over-fitting. Though, the connection between the observed fit and what we know about the ecology of spotted seals is important to note.
