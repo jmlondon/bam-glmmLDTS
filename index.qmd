@@ -63,7 +63,7 @@ based on new things learned and feedback from others. This is an open learning e
 
 The `glmmLDTS` package [@verhoef2009] was developed and published over ten years ago and, at the time, provided a fast-computing solution for generalized linear mixed models with massive data sets and many repeated measures on subjects. While the package has general applicability, it was developed with behavioral observations from telemetry deployments on seals in mind (see example data in [@verhoef2009] and analysis in [@london2012]). In recent years, the `mgcv` package's `bam()` model fitting function has emerged as a common solution for fitting similarly massive (if, even much more massive) data sets [@wood2017; @wood2014; @li2019]. The `bam()` approach differs in that it fits a generalized additive model (GAM) and employs additional numerical methods designed for data sets containing upwards of several tens of thousands of data. The random effects are included as special penalized smooths. There is also support for AR1 structure in the model to account for temporal autocorrelation.
 
-While `mgcv::bam()` relies on a low rank approximation it does use a full likelihood estimation. `glmmLDTS`, on the other hand, relies on quasi-likelihood but with a full rank approach. Additional simulation studies would be required to fully understand and throrouhgly compare the two (and, other frameworks such as `glmmTMB`, `gam`, `INLA` (first order Laplace approximation), `spaMM`, `spBayes`, and `spmodel` (second order Laplace approximation).
+While `mgcv::bam()` relies on a low rank approximation it does use a full likelihood estimation. `glmmLDTS`, on the other hand, relies on quasi-likelihood but with a full rank approach. Additional simulation studies would be required to fully understand and throrouhgly compare the two (and, other frameworks such as `glmmTMB`, `gam`, `INLA` (first order Laplace approximation), `spaMM`, `spBayes`, and `spmodel` (second order Laplace approximation, see [@hoef2023]).
 
 Here, the focus, is more on whether the speed of `mgcv::bam()` can be used as a tool for efficient model exploration and comparison in the sepecific case of spotted seal haul-out behavior from a large telemetry data set.
 
@@ -414,10 +414,13 @@ p1 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob)) +
     )
   )
 
-p1 <- p1 + facet_grid(age_sex~month)
-p1 <- p1 + scale_x_continuous(breaks = c(1,10,20,30)) +
-  scale_y_continuous(breaks = c(4,12,20))
-p1 <- p1 + theme(legend.position = "bottom") +
+p1 <- p1 + facet_grid(age_sex~month, scales = "free_x")
+p1 <- p1 + scale_x_continuous(breaks = c(5,10,15,20,25)) +
+  scale_y_continuous(breaks = c(4,12,20)) +
+  coord_cartesian(expand=FALSE)
+p1 <- p1 + theme_minimal() +
+  theme(panel.spacing = unit(0.1, "lines")) +
+  theme(legend.position = "bottom") +
   theme(strip.background = element_rect(colour="white")) +
   theme(axis.ticks=element_blank()) +
   xlab("day of month") + ylab("local solar hour") +
@@ -439,10 +442,13 @@ p2 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob_bam)) +
       title.hjust = 0.5
     )
   )
-p2 <- p2 + facet_grid(age_sex~month)
-p2 <- p2 + scale_x_continuous(breaks = c(1,10,20,30)) +
-  scale_y_continuous(breaks = c(4,12,20))
-p2 <- p2 + theme(legend.position = "bottom") +
+p2 <- p2 + facet_grid(age_sex~month, scales = "free_x")
+p2 <- p2 + scale_x_continuous(breaks = c(5,10,15,20,25)) +
+  scale_y_continuous(breaks = c(4,12,20)) +
+  coord_cartesian(expand=FALSE)
+p2 <- p2 + theme_minimal() +
+  theme(panel.spacing = unit(0.1, "lines")) +
+  theme(legend.position = "bottom") +
   theme(strip.background = element_rect(colour="white")) +
   theme(axis.ticks=element_blank()) +
   xlab("day of month") + ylab("local solar hour") +
@@ -598,10 +604,13 @@ p1 <- ggplot(plot_df, aes(day, solar_hour, fill = ho_prob_bam2)) +
     )
   )
 
-p1 <- p1 + facet_grid(age_sex~month)
-p1 <- p1 + scale_x_continuous(breaks = c(1,10,20,30)) +
-  scale_y_continuous(breaks = c(4,12,20))
-p1 <- p1 + theme(legend.position = "bottom") +
+p1 <- p1 + facet_grid(age_sex~month, scales = "free_x")
+p1 <- p1 + scale_x_continuous(breaks = c(5,10,15,20,25)) +
+  scale_y_continuous(breaks = c(4,12,20)) +
+  coord_cartesian(expand=FALSE)
+p1 <- p1 + theme_minimal() +
+  theme(panel.spacing = unit(0.1, "lines")) +
+  theme(legend.position = "bottom") +
   theme(strip.background = element_rect(colour="white")) +
   theme(axis.ticks=element_blank()) +
   xlab("day of month") + ylab("local solar hour") +
